@@ -222,7 +222,9 @@ function processFeature(feature, counts) {
 }
 
 async function loadMap() {
-  const response = await fetch('/data/rangkasbitung.geojson');
+  const response = await fetch(
+  `${import.meta.env.BASE_URL}data/rangkasbitung.geojson`
+);
   if (!response.ok) throw new Error('File GeoJSON tidak ditemukan di folder data.');
   const geojson = await response.json();
   const counts = { roads: 0, buildings: 0, water: 0, green: 0 };
