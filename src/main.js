@@ -213,28 +213,188 @@ function polygonToBuilding(rings, props) {
   return mesh;
 }
 
+function makeRoadRibbon(points, width, yOffset, material, name) {
+  if (points.length < 2) return null;
+
+  const positions = [];
+  const indices = [];
+  const half = width / 2;
+
+  for (let i = 0; i < points.length; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+
+    let dx = next.x - prev.x;
+    let dz = next.z - prev.z;
+    const len = Math.hypot(dx, dz) || 1;
+    dx /= len;
+    dz /= len;
+
+    // Vektor normal ke sisi kiri/kanan jalan.
+    const nx = -dz;
+    const nz = dx;
+
+    const leftX = points[i].x + nx * half;
+    const leftZ = points[i].z + nz * half;
+    const rightX = points[i].x - nx * half;
+    const rightZ = points[i].z - nz * half;
+
+    positions.push(
+      leftX, points[i].y + yOffset, leftZ,
+      rightX, points[i].y + yOffset, rightZ
+    );
+
+    if (i < points.length - 1) {
+      const a = i * 2;
+      const b = a + 1;
+      const c = a + 2;
+      const d = a + 3;
+      indices.push(a, b, c, b, d, c);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.material.side = THREE.DoubleSide;
+  mesh.receiveShadow = true;
+  mesh.userData.name = name;
+  return mesh;
+}
+
 function addRoad(coords, props = {}) {
   if (!coords || coords.length < 2) return null;
+
+  const highway = String(props.highway || 'road').toLowerCase();
+  const widths = {
+    motorway: 10, trunk: 9, primary: 8, secondary: 7,
+    tertiary: 6, residential: 4.8, unclassified: 4.2,
+    living_street: 4, service: 3.4, footway: 1.6,
+    pedestrian: 2.8, path: 1.3, track: 2.6, cycleway: 1.8
+  };
+  const roadWidth = widths[highway] || 3.8;
+
   const points = coords.map(([lon, lat]) => {
     const p = toWorld(lon, lat);
-    return new THREE.Vector3(p.x, terrainHeightAt(lon, lat) + 0.65, p.z);
+    return {
+      x: p.x,
+      z: p.z,
+      y: terrainHeightAt(lon, lat)
+    };
   });
-  const highway = String(props.highway || 'road');
-  const widths = {
-    motorway: 8, trunk: 7, primary: 6.5, secondary: 5.5,
-    tertiary: 4.5, residential: 3.2, unclassified: 3,
-    service: 2.2, footway: 1.1, path: 1, track: 2
-  };
-  const radius = (widths[highway] || 2.6) / 2;
-  const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
-  const geometry = new THREE.TubeGeometry(curve, Math.max(8, points.length * 3), radius, 5, false);
-  const mesh = new THREE.Mesh(
-    geometry,
-    new THREE.MeshStandardMaterial({ color: 0x59636b, roughness: 1 })
+
+  // Lapisan dasar bahu jalan agar tepi jalan tidak langsung bertemu tanah.
+  const shoulder = makeRoadRibbon(
+    points,
+    roadWidth + 1.2,
+    0.72,
+    new THREE.MeshStandardMaterial({
+      color: 0x9b9b8c,
+      roughness: 1,
+      side: THREE.DoubleSide
+    }),
+    `Bahu jalan ${highway}`
   );
-  mesh.receiveShadow = true;
-  mesh.userData.name = props.name || `Jalan ${highway}`;
-  return mesh;
+  if (shoulder) scene.add(shoulder);
+
+  // Permukaan aspal.
+  const asphalt = makeRoadRibbon(
+    points,
+    roadWidth,
+    0.92,
+    new THREE.MeshStandardMaterial({
+      color: highway === 'footway' || highway === 'path' ? 0xaaa18e : 0x343b40,
+      roughness: 0.96,
+      metalness: 0
+    }),
+    props.name || `Jalan ${highway}`
+  );
+  if (asphalt) scene.add(asphalt);
+
+  // Garis tepi tipis pada jalan utama.
+  if (['primary', 'secondary', 'tertiary'].includes(highway)) {
+    const edgeMaterial = new THREE.MeshStandardMaterial({
+      color: 0xe6dfc9,
+      roughness: 1,
+      side: THREE.DoubleSide
+    });
+    const leftEdge = makeRoadRibbon(points, roadWidth - 0.35, 0.96, edgeMaterial, 'Garis tepi jalan');
+    if (leftEdge) {
+      // Garis tepi digambar sebagai dua garis tipis menggunakan Line.
+      scene.remove(leftEdge);
+      leftEdge.geometry.dispose();
+    }
+
+    const makeEdgeLine = (side) => {
+      const edgePoints = points.map((p, i) => {
+        const prev = points[Math.max(0, i - 1)];
+        const next = points[Math.min(points.length - 1, i + 1)];
+        let dx = next.x - prev.x, dz = next.z - prev.z;
+        const len = Math.hypot(dx, dz) || 1;
+        dx /= len; dz /= len;
+        const nx = -dz, nz = dx;
+        return new THREE.Vector3(
+          p.x + nx * side * (roadWidth / 2 - 0.22),
+          p.y + 1.01,
+          p.z + nz * side * (roadWidth / 2 - 0.22)
+        );
+      });
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(edgePoints),
+        new THREE.LineBasicMaterial({ color: 0xe8e0c9 })
+      );
+      scene.add(line);
+    };
+    makeEdgeLine(1);
+    makeEdgeLine(-1);
+  }
+
+  // Marka tengah putus-putus untuk jalan arteri/kolektor.
+  if (['primary', 'secondary'].includes(highway)) {
+    const dashMaterial = new THREE.MeshStandardMaterial({
+      color: 0xf4d66b,
+      roughness: 1,
+      side: THREE.DoubleSide
+    });
+    let distanceSinceDash = 0;
+    let drawDash = true;
+    const dashPoints = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i], b = points[i + 1];
+      const length = Math.hypot(b.x - a.x, b.z - a.z);
+      const steps = Math.max(1, Math.ceil(length / 2));
+      for (let s = 0; s < steps; s++) {
+        const t = s / steps;
+        const x = THREE.MathUtils.lerp(a.x, b.x, t);
+        const z = THREE.MathUtils.lerp(a.z, b.z, t);
+        const y = THREE.MathUtils.lerp(a.y, b.y, t) + 1.04;
+        if (drawDash) dashPoints.push(new THREE.Vector3(x, y, z));
+        distanceSinceDash += length / steps;
+        if (distanceSinceDash >= 5) {
+          distanceSinceDash = 0;
+          drawDash = !drawDash;
+          if (!drawDash && dashPoints.length > 1) {
+            const mark = new THREE.Line(
+              new THREE.BufferGeometry().setFromPoints(dashPoints.splice(0)),
+              new THREE.LineBasicMaterial({ color: 0xf4d66b })
+            );
+            scene.add(mark);
+          }
+        }
+      }
+    }
+    if (dashPoints.length > 1) {
+      scene.add(new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(dashPoints),
+        new THREE.LineBasicMaterial({ color: 0xf4d66b })
+      ));
+    }
+  }
+
+  return asphalt;
 }
 
 function makeGroundPolygon(rings, color, yOffset) {
