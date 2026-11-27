@@ -1,0 +1,17 @@
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: Inter, Arial, sans-serif; background: #101820; }
+canvas { display: block; }
+#hud { position: absolute; z-index: 2; top: 18px; left: 20px; color: white; pointer-events: none; text-shadow: 0 2px 8px #0008; }
+.brand { font-weight: 900; letter-spacing: 2px; font-size: 20px; }
+.brand span { color: #91d7a5; }
+.subtitle { margin-top: 5px; font-size: 12px; color: #d6e1e5; }
+#stats { margin-top: 10px; display: inline-block; padding: 7px 10px; border-radius: 8px; background: #12242dcc; font-size: 12px; }
+#help, #legend { position: absolute; z-index: 2; color: #f2f5f6; background: #12202cdd; border: 1px solid #ffffff20; border-radius: 10px; padding: 12px 14px; font-size: 12px; line-height: 1.7; }
+#help { left: 20px; bottom: 20px; }
+#legend { right: 20px; bottom: 20px; }
+#legend div { display: flex; align-items: center; gap: 8px; }
+#legend i { width: 14px; height: 9px; display: inline-block; border-radius: 2px; }
+.road { background: #59636b; } .building { background: #c8b99f; } .water { background: #3c9bc5; } .green { background: #6caa72; }
+#loading { position: absolute; z-index: 3; inset: 0; display: grid; place-items: center; background: #101820; color: white; font-size: 15px; transition: opacity .4s; }
+#loading.done { opacity: 0; pointer-events: none; }
+@media (max-width: 700px) { #help { display: none; } .brand { font-size: 16px; } }
