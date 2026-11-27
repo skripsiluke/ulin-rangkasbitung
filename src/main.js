@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import './style.css';
+import '../style.css';
 
 // Pusat area: Alun-Alun Rangkasbitung. Satuan dunia = meter.
 const CENTER = { lat: -6.36026, lon: 106.24616 };
