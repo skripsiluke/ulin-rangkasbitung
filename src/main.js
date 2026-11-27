@@ -265,6 +265,99 @@ function makeRoadRibbon(points, width, yOffset, material, name) {
   return mesh;
 }
 
+function addRoadsideTree(x, z, groundY, seed = 1, scale = 1) {
+  const group = new THREE.Group();
+
+  const trunkHeight = 3.0 * scale;
+  const crownHeight = 4.2 * scale;
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.22 * scale, 0.34 * scale, trunkHeight, 7),
+    new THREE.MeshStandardMaterial({ color: 0x765034, roughness: 1 })
+  );
+  trunk.position.y = groundY + trunkHeight / 2;
+  trunk.castShadow = true;
+  trunk.receiveShadow = true;
+  group.add(trunk);
+
+  const greens = [0x39734a, 0x4c8550, 0x5b914f, 0x347b55];
+  const foliageMaterial = new THREE.MeshStandardMaterial({
+    color: greens[Math.abs(seed) % greens.length],
+    roughness: 1
+  });
+
+  // Tajuk berlapis supaya siluet pohon tidak tampak seperti satu kerucut.
+  const crown = new THREE.Mesh(
+    new THREE.SphereGeometry(2.0 * scale, 9, 7),
+    foliageMaterial
+  );
+  crown.position.y = groundY + trunkHeight + crownHeight * 0.48;
+  crown.scale.set(1, 1.05, 1);
+  crown.castShadow = true;
+  crown.receiveShadow = true;
+  group.add(crown);
+
+  const upperCrown = new THREE.Mesh(
+    new THREE.SphereGeometry(1.45 * scale, 8, 6),
+    foliageMaterial
+  );
+  upperCrown.position.set(
+    (seed % 3 - 1) * 0.35 * scale,
+    groundY + trunkHeight + crownHeight * 0.82,
+    ((seed + 1) % 3 - 1) * 0.25 * scale
+  );
+  upperCrown.castShadow = true;
+  group.add(upperCrown);
+
+  group.position.set(x, 0, z);
+  group.userData.name = 'Pohon tepi jalan';
+  scene.add(group);
+  return group;
+}
+
+function addRoadsideTrees(points, roadWidth, highway) {
+  // Hindari jalan setapak dan jalan layanan kecil. Jarak cukup renggang
+  // agar pohon tidak terlalu padat pada jaringan jalan yang saling berdekatan.
+  if (!['primary', 'secondary', 'tertiary', 'residential'].includes(highway)) return;
+  if (points.length < 2) return;
+
+  const spacing = highway === 'primary' ? 42 : 34;
+  const offset = roadWidth / 2 + 1.9;
+  let distanceToNext = spacing * 0.55;
+  let travelled = 0;
+  let treeIndex = 0;
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const segmentLength = Math.hypot(dx, dz);
+    if (segmentLength < 0.5) continue;
+
+    while (distanceToNext <= segmentLength) {
+      const t = distanceToNext / segmentLength;
+      const x = THREE.MathUtils.lerp(a.x, b.x, t);
+      const z = THREE.MathUtils.lerp(a.z, b.z, t);
+      const y = THREE.MathUtils.lerp(a.y, b.y, t);
+
+      const nx = -dz / segmentLength;
+      const nz = dx / segmentLength;
+      // Selang-seling kiri dan kanan untuk mengurangi risiko berhadapan
+      // dengan bangunan pada ruas yang sempit.
+      const side = treeIndex % 2 === 0 ? 1 : -1;
+      const jitter = ((treeIndex * 17) % 5) * 0.25;
+      const treeX = x + nx * side * (offset + jitter);
+      const treeZ = z + nz * side * (offset + jitter);
+
+      addRoadsideTree(treeX, treeZ, y, treeIndex + Math.round(travelled), 0.82 + (treeIndex % 3) * 0.12);
+      treeIndex++;
+      distanceToNext += spacing;
+    }
+    travelled += segmentLength;
+    distanceToNext -= segmentLength;
+  }
+}
+
 function addRoad(coords, props = {}) {
   if (!coords || coords.length < 2) return null;
 
@@ -285,6 +378,8 @@ function addRoad(coords, props = {}) {
       y: terrainHeightAt(lon, lat)
     };
   });
+
+  addRoadsideTrees(points, roadWidth, highway);
 
   // Lapisan dasar bahu jalan agar tepi jalan tidak langsung bertemu tanah.
   const shoulder = makeRoadRibbon(
