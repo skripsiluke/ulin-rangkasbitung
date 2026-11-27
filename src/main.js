@@ -6,6 +6,13 @@ import '../style.css';
 const CENTER = { lat: -6.36026, lon: 106.24616 };
 const METERS_PER_DEG_LAT = 110540;
 const METERS_PER_DEG_LON = 111320 * Math.cos(CENTER.lat * Math.PI / 180);
+const BASE_URL = import.meta.env.BASE_URL;
+const HEIGHTMAP_URL = `${BASE_URL}data/ulin-rangkasbitung-heightmap.json`;
+const GEOJSON_URL = `${BASE_URL}data/rangkasbitung.geojson`;
+const VERTICAL_EXAGGERATION = 1.5;
+
+let heightmap = null;
+let minElevation = 0;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9bc5d3);
@@ -25,7 +32,7 @@ renderer.toneMappingExposure = 1.15;
 document.querySelector('#app').appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0, 0, 0);
+controls.target.set(0, 12, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.maxPolarAngle = Math.PI * 0.49;
@@ -43,32 +50,104 @@ sun.shadow.camera.top = 700;
 sun.shadow.camera.bottom = -700;
 scene.add(sun);
 
-// Area dasar 1 km x 1 km
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(1000, 1000),
-  new THREE.MeshStandardMaterial({ color: 0x78966a, roughness: 1 })
-);
-ground.rotation.x = -Math.PI / 2;
-ground.position.y = -1;
-ground.receiveShadow = true;
-scene.add(ground);
-
-// Garis batas area
-const borderPoints = [
-  new THREE.Vector3(-500, 0.2, -500), new THREE.Vector3(500, 0.2, -500),
-  new THREE.Vector3(500, 0.2, 500), new THREE.Vector3(-500, 0.2, 500),
-  new THREE.Vector3(-500, 0.2, -500)
-];
-const border = new THREE.Line(
-  new THREE.BufferGeometry().setFromPoints(borderPoints),
-  new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 })
-);
-scene.add(border);
-
 function toWorld(lon, lat) {
   const x = (lon - CENTER.lon) * METERS_PER_DEG_LON;
   const z = -(lat - CENTER.lat) * METERS_PER_DEG_LAT;
   return { x, z };
+}
+
+function terrainHeightAt(lon, lat) {
+  if (!heightmap) return 0;
+  const b = heightmap.bounds;
+  const raster = heightmap.raster;
+  const values = heightmap.elevation_m;
+
+  const col = THREE.MathUtils.clamp(
+    ((lon - b.west) / (b.east - b.west)) * (raster.width - 1),
+    0, raster.width - 1
+  );
+  const row = THREE.MathUtils.clamp(
+    ((b.north - lat) / (b.north - b.south)) * (raster.height - 1),
+    0, raster.height - 1
+  );
+
+  const x0 = Math.floor(col), x1 = Math.min(x0 + 1, raster.width - 1);
+  const y0 = Math.floor(row), y1 = Math.min(y0 + 1, raster.height - 1);
+  const tx = col - x0, ty = row - y0;
+
+  const samples = [
+    values[y0]?.[x0], values[y0]?.[x1],
+    values[y1]?.[x0], values[y1]?.[x1]
+  ];
+  const valid = samples.filter(v => Number.isFinite(v));
+  if (!valid.length) return 0;
+
+  const a = Number.isFinite(values[y0]?.[x0]) ? values[y0][x0] : valid[0];
+  const b1 = Number.isFinite(values[y0]?.[x1]) ? values[y0][x1] : a;
+  const c = Number.isFinite(values[y1]?.[x0]) ? values[y1][x0] : a;
+  const d = Number.isFinite(values[y1]?.[x1]) ? values[y1][x1] : c;
+  const elevation = THREE.MathUtils.lerp(
+    THREE.MathUtils.lerp(a, b1, tx),
+    THREE.MathUtils.lerp(c, d, tx),
+    ty
+  );
+  return Math.max(0, (elevation - minElevation) * VERTICAL_EXAGGERATION);
+}
+
+async function loadTerrain() {
+  const response = await fetch(HEIGHTMAP_URL);
+  if (!response.ok) throw new Error(`Heightmap tidak ditemukan (${response.status})`);
+  heightmap = await response.json();
+  minElevation = Math.min(...heightmap.elevation_m.flat().filter(Number.isFinite));
+
+  // Heightmap 33 x 32: 32 segmen X dan 31 segmen Z.
+  const geometry = new THREE.PlaneGeometry(
+    1000, 1000,
+    heightmap.raster.width - 1,
+    heightmap.raster.height - 1
+  );
+  const position = geometry.attributes.position;
+  let index = 0;
+  for (let row = 0; row < heightmap.raster.height; row++) {
+    for (let col = 0; col < heightmap.raster.width; col++) {
+      const elevation = heightmap.elevation_m[row][col];
+      const y = Number.isFinite(elevation)
+        ? Math.max(0, (elevation - minElevation) * VERTICAL_EXAGGERATION)
+        : 0;
+      // PlaneGeometry sebelum rotasi: z menjadi sumbu vertikal setelah rotasi X.
+      position.setZ(index, y);
+      index++;
+    }
+  }
+  geometry.rotateX(-Math.PI / 2);
+  geometry.computeVertexNormals();
+
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x78966a,
+    roughness: 1,
+    side: THREE.DoubleSide
+  });
+  const terrain = new THREE.Mesh(geometry, material);
+  terrain.receiveShadow = true;
+  terrain.name = 'Terrain SRTM Rangkasbitung';
+  scene.add(terrain);
+
+  // Batas area mengikuti tinggi terrain di tiap sudut.
+  const corners = [
+    [-500, -500, 106.24163, -6.35575],
+    [500, -500, 106.25069, -6.35575],
+    [500, 500, 106.25069, -6.36477],
+    [-500, 500, 106.24163, -6.36477],
+    [-500, -500, 106.24163, -6.35575]
+  ];
+  const borderPoints = corners.map(([x, z, lon, lat]) =>
+    new THREE.Vector3(x, terrainHeightAt(lon, lat) + 0.5, z)
+  );
+  const border = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(borderPoints),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.75 })
+  );
+  scene.add(border);
 }
 
 function getHeight(properties = {}) {
@@ -79,6 +158,15 @@ function getHeight(properties = {}) {
   const type = String(properties.building || '').toLowerCase();
   if (['apartments', 'commercial', 'office', 'retail'].includes(type)) return 12;
   return 5 + ((String(properties['@id'] || '').length % 4) * 1.3);
+}
+
+function averageCoordinate(ring) {
+  const sum = ring.reduce((acc, point) => {
+    acc.lon += point[0];
+    acc.lat += point[1];
+    return acc;
+  }, { lon: 0, lat: 0 });
+  return { lon: sum.lon / ring.length, lat: sum.lat / ring.length };
 }
 
 function polygonToBuilding(rings, props) {
@@ -92,7 +180,6 @@ function polygonToBuilding(rings, props) {
   for (let i = 1; i < outer.length; i++) shape.lineTo(outer[i].x, outer[i].y);
   shape.closePath();
 
-  // Lubang pada polygon (misalnya halaman dalam) dibuat sebagai holes.
   for (const ring of rings.slice(1)) {
     if (ring.length < 4) continue;
     const hole = new THREE.Path();
@@ -107,7 +194,9 @@ function polygonToBuilding(rings, props) {
   }
 
   const height = getHeight(props);
-  const geometry = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false, curveSegments: 1 });
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: height, bevelEnabled: false, curveSegments: 1
+  });
   geometry.rotateX(-Math.PI / 2);
   geometry.computeVertexNormals();
 
@@ -116,7 +205,8 @@ function polygonToBuilding(rings, props) {
     roughness: 0.92
   });
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.y = 0.15;
+  const center = averageCoordinate(rings[0]);
+  mesh.position.y = terrainHeightAt(center.lon, center.lat) + 0.15;
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   mesh.userData.name = props.name || 'Bangunan';
@@ -127,7 +217,7 @@ function addRoad(coords, props = {}) {
   if (!coords || coords.length < 2) return null;
   const points = coords.map(([lon, lat]) => {
     const p = toWorld(lon, lat);
-    return new THREE.Vector3(p.x, 0.65, p.z);
+    return new THREE.Vector3(p.x, terrainHeightAt(lon, lat) + 0.65, p.z);
   });
   const highway = String(props.highway || 'road');
   const widths = {
@@ -138,13 +228,16 @@ function addRoad(coords, props = {}) {
   const radius = (widths[highway] || 2.6) / 2;
   const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
   const geometry = new THREE.TubeGeometry(curve, Math.max(8, points.length * 3), radius, 5, false);
-  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x59636b, roughness: 1 }));
+  const mesh = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({ color: 0x59636b, roughness: 1 })
+  );
   mesh.receiveShadow = true;
   mesh.userData.name = props.name || `Jalan ${highway}`;
   return mesh;
 }
 
-function addWaterPolygon(rings) {
+function makeGroundPolygon(rings, color, yOffset) {
   if (!rings || !rings[0] || rings[0].length < 4) return null;
   const pts = rings[0].map(([lon, lat]) => {
     const p = toWorld(lon, lat);
@@ -154,31 +247,18 @@ function addWaterPolygon(rings) {
   shape.moveTo(pts[0].x, pts[0].y);
   pts.slice(1).forEach(p => shape.lineTo(p.x, p.y));
   shape.closePath();
-  const geometry = new THREE.ShapeGeometry(shape);
-  geometry.rotateX(-Math.PI / 2);
-  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-    color: 0x3c9bc5, roughness: 0.35, side: THREE.DoubleSide
-  }));
-  mesh.position.y = 0.12;
-  return mesh;
-}
 
-function addGreenPolygon(rings) {
-  if (!rings || !rings[0] || rings[0].length < 4) return null;
-  const pts = rings[0].map(([lon, lat]) => {
-    const p = toWorld(lon, lat);
-    return new THREE.Vector2(p.x, -p.z);
-  });
-  const shape = new THREE.Shape();
-  shape.moveTo(pts[0].x, pts[0].y);
-  pts.slice(1).forEach(p => shape.lineTo(p.x, p.y));
-  shape.closePath();
   const geometry = new THREE.ShapeGeometry(shape);
   geometry.rotateX(-Math.PI / 2);
-  const mesh = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
-    color: 0x6caa72, side: THREE.DoubleSide, roughness: 1
-  }));
-  mesh.position.y = 0.08;
+  const center = averageCoordinate(rings[0]);
+  const mesh = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({
+      color, roughness: color === 0x3c9bc5 ? 0.35 : 1,
+      side: THREE.DoubleSide
+    })
+  );
+  mesh.position.y = terrainHeightAt(center.lon, center.lat) + yOffset;
   return mesh;
 }
 
@@ -207,46 +287,49 @@ function processFeature(feature, counts) {
     const polygons = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
     for (const rings of polygons) {
       if (p.building) {
-        const b = polygonToBuilding(rings, p);
-        if (b) { scene.add(b); counts.buildings++; }
+        const building = polygonToBuilding(rings, p);
+        if (building) { scene.add(building); counts.buildings++; }
       } else if (p.natural === 'water' || p.water || p.landuse === 'reservoir') {
-        const w = addWaterPolygon(rings);
-        if (w) { scene.add(w); counts.water++; }
+        const water = makeGroundPolygon(rings, 0x3c9bc5, 0.25);
+        if (water) { scene.add(water); counts.water++; }
       } else if (p.leisure === 'park' || p.leisure === 'garden' ||
                  ['forest', 'grass', 'meadow', 'farmland', 'orchard'].includes(p.landuse)) {
-        const gr = addGreenPolygon(rings);
-        if (gr) { scene.add(gr); counts.green++; }
+        const green = makeGroundPolygon(rings, 0x6caa72, 0.18);
+        if (green) { scene.add(green); counts.green++; }
       }
     }
   }
 }
 
 async function loadMap() {
-  const response = await fetch(
-  `${import.meta.env.BASE_URL}data/rangkasbitung.geojson`
-);
-  if (!response.ok) throw new Error('File GeoJSON tidak ditemukan di folder data.');
+  await loadTerrain();
+
+  const response = await fetch(GEOJSON_URL);
+  if (!response.ok) throw new Error(`File GeoJSON tidak ditemukan (${response.status})`);
   const geojson = await response.json();
   const counts = { roads: 0, buildings: 0, water: 0, green: 0 };
   geojson.features.forEach(feature => processFeature(feature, counts));
 
-  // Penanda pusat area/alun-alun (titik referensi, bukan model alun-alun detail).
   const marker = new THREE.Mesh(
     new THREE.CylinderGeometry(3, 3, 2, 20),
     new THREE.MeshStandardMaterial({ color: 0xffd34e })
   );
-  marker.position.set(0, 1.5, 0);
+  marker.position.set(
+    0,
+    terrainHeightAt(CENTER.lon, CENTER.lat) + 1.5,
+    0
+  );
   marker.castShadow = true;
   scene.add(marker);
 
   document.querySelector('#stats').textContent =
-    `${counts.roads} segmen jalan • ${counts.buildings} bangunan • ${counts.water} area air • ${counts.green} area hijau`;
+    `${counts.roads} segmen jalan • ${counts.buildings} bangunan • ${counts.water} area air • ${counts.green} area hijau • Terrain SRTM aktif`;
   document.querySelector('#loading').classList.add('done');
 }
 
 loadMap().catch(error => {
   console.error(error);
-  document.querySelector('#loading').textContent = `Gagal memuat peta: ${error.message}`;
+  document.querySelector('#loading').textContent = `Gagal memuat peta/terrain: ${error.message}`;
 });
 
 function animate() {
