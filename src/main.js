@@ -314,6 +314,89 @@ function addRoad(coords, props = {}) {
   );
   if (asphalt) scene.add(asphalt);
 
+  // Trotoar dan drainase untuk jalan perkotaan.
+  // Tidak diterapkan pada jalur kaki, jalan setapak, atau gang layanan sempit.
+  const urbanRoads = [
+    'primary', 'secondary', 'tertiary',
+    'residential', 'unclassified', 'living_street'
+  ];
+
+  if (urbanRoads.includes(highway)) {
+    const sidewalkWidth = ['primary', 'secondary'].includes(highway) ? 1.65 : 1.25;
+    const curbWidth = 0.18;
+    const drainWidth = 0.24;
+    const sidewalkOffset = roadWidth / 2 + sidewalkWidth / 2 + 0.12;
+
+    const offsetPoints = (side, distance) => points.map((p, i) => {
+      const prev = points[Math.max(0, i - 1)];
+      const next = points[Math.min(points.length - 1, i + 1)];
+      let dx = next.x - prev.x;
+      let dz = next.z - prev.z;
+      const len = Math.hypot(dx, dz) || 1;
+      dx /= len;
+      dz /= len;
+      const nx = -dz;
+      const nz = dx;
+      return {
+        x: p.x + nx * side * distance,
+        z: p.z + nz * side * distance,
+        y: p.y
+      };
+    });
+
+    for (const side of [-1, 1]) {
+      const sidewalkCenter = offsetPoints(side, sidewalkOffset);
+      const sidewalk = makeRoadRibbon(
+        sidewalkCenter,
+        sidewalkWidth,
+        1.02,
+        new THREE.MeshStandardMaterial({
+          color: 0xb9b5a8,
+          roughness: 1,
+          side: THREE.DoubleSide
+        }),
+        `Trotoar ${highway}`
+      );
+      if (sidewalk) scene.add(sidewalk);
+
+      // Kerb/bibir trotoar yang sedikit lebih tinggi dari permukaan trotoar.
+      const curbCenter = offsetPoints(
+        side,
+        roadWidth / 2 + sidewalkWidth + 0.12
+      );
+      const curb = makeRoadRibbon(
+        curbCenter,
+        curbWidth,
+        1.22,
+        new THREE.MeshStandardMaterial({
+          color: 0xd4d0c3,
+          roughness: 1,
+          side: THREE.DoubleSide
+        }),
+        `Kereb trotoar ${highway}`
+      );
+      if (curb) scene.add(curb);
+
+      // Saluran drainase sempit di sisi luar trotoar.
+      const drainCenter = offsetPoints(
+        side,
+        roadWidth / 2 + sidewalkWidth + 0.48
+      );
+      const drain = makeRoadRibbon(
+        drainCenter,
+        drainWidth,
+        0.84,
+        new THREE.MeshStandardMaterial({
+          color: 0x59645f,
+          roughness: 1,
+          side: THREE.DoubleSide
+        }),
+        `Drainase tepi jalan ${highway}`
+      );
+      if (drain) scene.add(drain);
+    }
+  }
+
   // Garis tepi tipis pada jalan utama.
   if (['primary', 'secondary', 'tertiary'].includes(highway)) {
     const edgeMaterial = new THREE.MeshStandardMaterial({
