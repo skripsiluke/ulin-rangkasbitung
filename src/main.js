@@ -244,14 +244,27 @@ function polygonToBuilding(rings, props) {
   geometry.computeVertexNormals();
 
   const group = new THREE.Group();
-  const body = new THREE.Mesh(
-    geometry,
-    new THREE.MeshStandardMaterial({
-      color: colors[hash % colors.length],
-      roughness: 0.88,
-      metalness: 0.02
-    })
-  );
+  const wallMaterial = new THREE.MeshStandardMaterial({
+    color: colors[hash % colors.length],
+    roughness: 0.88,
+    metalness: 0.02
+  });
+  const roofPalette = {
+    house: [0x8f5944, 0x9b6348, 0x766b5a],
+    residential: [0x8f5944, 0x9b6348, 0x766b5a],
+    commercial: [0x777b79, 0x8c8980, 0x6e7778],
+    retail: [0x8b6651, 0x777b79, 0x9a8064],
+    industrial: [0x777c7b, 0x8d8d83, 0x6e7473],
+    apartments: [0x777b79, 0x8c8980, 0x6e7778],
+    office: [0x667a7c, 0x7e8987, 0x596c70]
+  };
+  const roofColors = roofPalette[type] || [0x8a7863, 0x777b79, 0x9a8064];
+  const roofMaterial = new THREE.MeshStandardMaterial({
+    color: roofColors[hash % roofColors.length],
+    roughness: 0.94,
+    metalness: 0.01
+  });
+  const body = new THREE.Mesh(geometry, [wallMaterial, roofMaterial]);
   body.castShadow = true;
   body.receiveShadow = true;
   group.add(body);
@@ -274,8 +287,8 @@ function polygonToBuilding(rings, props) {
     const length = Math.hypot(dx, dz);
     if (length < 4.5) continue;
     const angle = -Math.atan2(dz, dx);
-    const count = Math.min(6, Math.max(1, Math.floor(length / 4.2)));
-    const windowWidth = Math.min(1.3, (length / count) * 0.4);
+    const count = Math.min(4, Math.max(1, Math.floor(length / 5.2)));
+    const windowWidth = Math.min(1.15, (length / count) * 0.34);
     const rows = Math.min(4, Math.max(1, Math.floor((height - 2.5) / 2.9)));
 
     for (let row = 0; row < rows; row++) {
@@ -284,19 +297,20 @@ function polygonToBuilding(rings, props) {
       for (let col = 0; col < count; col++) {
         const t = (col + 0.5) / count;
         const x = THREE.MathUtils.lerp(a.x, b.x, t);
+        // Shape Y is stored as -worldZ; negate it after the -90° X rotation.
         const z = THREE.MathUtils.lerp(a.y, b.y, t);
 
         const windowMesh = new THREE.Mesh(
           new THREE.BoxGeometry(windowWidth, 1.05, 0.075), glass
         );
-        windowMesh.position.set(x, y, z);
+        windowMesh.position.set(x, y, -z);
         windowMesh.rotation.y = angle;
         group.add(windowMesh);
 
         const sill = new THREE.Mesh(
           new THREE.BoxGeometry(windowWidth + 0.12, 0.09, 0.11), trim
         );
-        sill.position.set(x, y - 0.58, z);
+        sill.position.set(x, y - 0.58, -z);
         sill.rotation.y = angle;
         group.add(sill);
       }
@@ -311,7 +325,7 @@ function polygonToBuilding(rings, props) {
 
   if (longest.length > 5) {
     const door = new THREE.Mesh(new THREE.BoxGeometry(1.05, 2.15, 0.10), doorMat);
-    door.position.set((longest.a.x + longest.b.x) / 2, 1.08, (longest.a.y + longest.b.y) / 2);
+    door.position.set((longest.a.x + longest.b.x) / 2, 1.08, -(longest.a.y + longest.b.y) / 2);
     door.rotation.y = -Math.atan2(longest.b.y - longest.a.y, longest.b.x - longest.a.x);
     group.add(door);
   }
@@ -321,7 +335,7 @@ function polygonToBuilding(rings, props) {
       new THREE.BoxGeometry(1.8, 0.9, 1.4),
       new THREE.MeshStandardMaterial({ color: 0x9b9a91, roughness: 1 })
     );
-    roofUnit.position.set(outerGeo[0].x, height + 0.48, outerGeo[0].y);
+    roofUnit.position.set(outerGeo[0].x, height + 0.48, -outerGeo[0].y);
     roofUnit.castShadow = true;
     group.add(roofUnit);
   }
