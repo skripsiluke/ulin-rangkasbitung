@@ -94,6 +94,34 @@ function terrainHeightAt(lon, lat) {
   return Math.max(0, (elevation - minElevation) * VERTICAL_EXAGGERATION);
 }
 
+
+function createGrassTexture() {
+  const size = 256;
+  const data = new Uint8Array(size * size * 4);
+  let seed = 9137;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  for (let i = 0; i < size * size; i++) {
+    const n = (random() - 0.5) * 26;
+    const patch = random() > 0.985 ? 12 : 0;
+    data[i * 4] = Math.max(0, Math.min(255, 105 + n + patch));
+    data[i * 4 + 1] = Math.max(0, Math.min(255, 139 + n + patch));
+    data[i * 4 + 2] = Math.max(0, Math.min(255, 83 + n));
+    data[i * 4 + 3] = 255;
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(22, 22);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  texture.needsUpdate = true;
+  return texture;
+}
+const grassTexture = createGrassTexture();
+
 async function loadTerrain() {
   const response = await fetch(HEIGHTMAP_URL);
   if (!response.ok) throw new Error(`Heightmap tidak ditemukan (${response.status})`);
@@ -123,7 +151,8 @@ async function loadTerrain() {
   geometry.computeVertexNormals();
 
   const material = new THREE.MeshStandardMaterial({
-    color: 0x78966a,
+    color: 0xffffff,
+    map: grassTexture,
     roughness: 1,
     side: THREE.DoubleSide
   });
@@ -171,13 +200,14 @@ function averageCoordinate(ring) {
 
 function polygonToBuilding(rings, props) {
   if (!rings || !rings[0] || rings[0].length < 4) return null;
-  const outer = rings[0].map(([lon, lat]) => {
+  const outerGeo = rings[0].map(([lon, lat]) => {
     const p = toWorld(lon, lat);
     return new THREE.Vector2(p.x, -p.z);
   });
+
   const shape = new THREE.Shape();
-  shape.moveTo(outer[0].x, outer[0].y);
-  for (let i = 1; i < outer.length; i++) shape.lineTo(outer[i].x, outer[i].y);
+  shape.moveTo(outerGeo[0].x, outerGeo[0].y);
+  for (let i = 1; i < outerGeo.length; i++) shape.lineTo(outerGeo[i].x, outerGeo[i].y);
   shape.closePath();
 
   for (const ring of rings.slice(1)) {
@@ -194,23 +224,108 @@ function polygonToBuilding(rings, props) {
   }
 
   const height = getHeight(props);
+  const type = String(props.building || 'yes').toLowerCase();
+  const palette = {
+    house: [0xd9cbb3, 0xcdbda2, 0xe1d6c2, 0xc8b99f],
+    residential: [0xd8c9b1, 0xc9b89d, 0xe1d6c4],
+    commercial: [0xd0c5b1, 0xc2b9a8, 0xded4c2],
+    retail: [0xd8c7ae, 0xc9b89f, 0xe0d3bd],
+    industrial: [0xb9b8ae, 0xc4c2b8, 0xaead9f],
+    apartments: [0xc9c6b9, 0xd5d0c2, 0xbeb9aa],
+    office: [0xc2c8c5, 0xd0d5d1, 0xb5c1c0]
+  };
+  const colors = palette[type] || [0xd5c9b5, 0xc9bda9, 0xe0d5c3];
+  const hash = String(props['@id'] || props.name || `${outerGeo[0].x}`).split('')
+    .reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
   const geometry = new THREE.ExtrudeGeometry(shape, {
     depth: height, bevelEnabled: false, curveSegments: 1
   });
   geometry.rotateX(-Math.PI / 2);
   geometry.computeVertexNormals();
 
-  const material = new THREE.MeshStandardMaterial({
-    color: props.name ? 0xd8c8aa : 0xc8b99f,
-    roughness: 0.92
-  });
-  const mesh = new THREE.Mesh(geometry, material);
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(
+    geometry,
+    new THREE.MeshStandardMaterial({
+      color: colors[hash % colors.length],
+      roughness: 0.88,
+      metalness: 0.02
+    })
+  );
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
   const center = averageCoordinate(rings[0]);
-  mesh.position.y = terrainHeightAt(center.lon, center.lat) + 0.15;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData.name = props.name || 'Bangunan';
-  return mesh;
+  group.position.y = terrainHeightAt(center.lon, center.lat) + 0.18;
+  group.userData.name = props.name || `Bangunan ${type}`;
+
+  const glass = new THREE.MeshStandardMaterial({
+    color: 0x46616b, roughness: 0.28, metalness: 0.18,
+    emissive: 0x14252a, emissiveIntensity: 0.12
+  });
+  const trim = new THREE.MeshStandardMaterial({ color: 0xe6dfcf, roughness: 0.8 });
+  const doorMat = new THREE.MeshStandardMaterial({ color: 0x594b3d, roughness: 0.85 });
+
+  const perimeter = outerGeo.slice(0, -1);
+  for (let i = 0; i < perimeter.length; i++) {
+    const a = perimeter[i], b = perimeter[(i + 1) % perimeter.length];
+    const dx = b.x - a.x, dz = b.y - a.y;
+    const length = Math.hypot(dx, dz);
+    if (length < 4.5) continue;
+    const angle = -Math.atan2(dz, dx);
+    const count = Math.min(6, Math.max(1, Math.floor(length / 4.2)));
+    const windowWidth = Math.min(1.3, (length / count) * 0.4);
+    const rows = Math.min(4, Math.max(1, Math.floor((height - 2.5) / 2.9)));
+
+    for (let row = 0; row < rows; row++) {
+      const y = 1.55 + row * 2.7;
+      if (y + 1.05 > height - 0.4) continue;
+      for (let col = 0; col < count; col++) {
+        const t = (col + 0.5) / count;
+        const x = THREE.MathUtils.lerp(a.x, b.x, t);
+        const z = THREE.MathUtils.lerp(a.y, b.y, t);
+
+        const windowMesh = new THREE.Mesh(
+          new THREE.BoxGeometry(windowWidth, 1.05, 0.075), glass
+        );
+        windowMesh.position.set(x, y, z);
+        windowMesh.rotation.y = angle;
+        group.add(windowMesh);
+
+        const sill = new THREE.Mesh(
+          new THREE.BoxGeometry(windowWidth + 0.12, 0.09, 0.11), trim
+        );
+        sill.position.set(x, y - 0.58, z);
+        sill.rotation.y = angle;
+        group.add(sill);
+      }
+    }
+  }
+
+  const longest = perimeter.reduce((best, a, i) => {
+    const b = perimeter[(i + 1) % perimeter.length];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    return length > best.length ? { a, b, length } : best;
+  }, { length: 0, a: perimeter[0], b: perimeter[1] });
+
+  if (longest.length > 5) {
+    const door = new THREE.Mesh(new THREE.BoxGeometry(1.05, 2.15, 0.10), doorMat);
+    door.position.set((longest.a.x + longest.b.x) / 2, 1.08, (longest.a.y + longest.b.y) / 2);
+    door.rotation.y = -Math.atan2(longest.b.y - longest.a.y, longest.b.x - longest.a.x);
+    group.add(door);
+  }
+
+  if (height >= 7) {
+    const roofUnit = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 0.9, 1.4),
+      new THREE.MeshStandardMaterial({ color: 0x9b9a91, roughness: 1 })
+    );
+    roofUnit.position.set(outerGeo[0].x, height + 0.48, outerGeo[0].y);
+    roofUnit.castShadow = true;
+    group.add(roofUnit);
+  }
+  return group;
 }
 
 function makeRoadRibbon(points, width, yOffset, material, name) {
@@ -267,51 +382,64 @@ function makeRoadRibbon(points, width, yOffset, material, name) {
 
 function addRoadsideTree(x, z, groundY, seed = 1, scale = 1) {
   const group = new THREE.Group();
-
-  const trunkHeight = 3.0 * scale;
-  const crownHeight = 4.2 * scale;
+  const trunkHeight = 3.2 * scale;
   const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.22 * scale, 0.34 * scale, trunkHeight, 7),
-    new THREE.MeshStandardMaterial({ color: 0x765034, roughness: 1 })
+    new THREE.CylinderGeometry(0.18 * scale, 0.32 * scale, trunkHeight, 8),
+    new THREE.MeshStandardMaterial({ color: 0x68452e, roughness: 1 })
   );
   trunk.position.y = groundY + trunkHeight / 2;
   trunk.castShadow = true;
-  trunk.receiveShadow = true;
   group.add(trunk);
 
-  const greens = [0x39734a, 0x4c8550, 0x5b914f, 0x347b55];
+  const greens = [0x286b42, 0x397b49, 0x4d8750, 0x347454, 0x5a8b4a];
   const foliageMaterial = new THREE.MeshStandardMaterial({
-    color: greens[Math.abs(seed) % greens.length],
-    roughness: 1
+    color: greens[Math.abs(seed) % greens.length], roughness: 1
   });
-
-  // Tajuk berlapis supaya siluet pohon tidak tampak seperti satu kerucut.
-  const crown = new THREE.Mesh(
-    new THREE.SphereGeometry(2.0 * scale, 9, 7),
-    foliageMaterial
-  );
-  crown.position.y = groundY + trunkHeight + crownHeight * 0.48;
-  crown.scale.set(1, 1.05, 1);
-  crown.castShadow = true;
-  crown.receiveShadow = true;
-  group.add(crown);
-
-  const upperCrown = new THREE.Mesh(
-    new THREE.SphereGeometry(1.45 * scale, 8, 6),
-    foliageMaterial
-  );
-  upperCrown.position.set(
-    (seed % 3 - 1) * 0.35 * scale,
-    groundY + trunkHeight + crownHeight * 0.82,
-    ((seed + 1) % 3 - 1) * 0.25 * scale
-  );
-  upperCrown.castShadow = true;
-  group.add(upperCrown);
-
+  const canopy = [
+    [0, 0, 0, 1.65], [-0.95, 0.1, 0.15, 1.05],
+    [0.9, 0.05, -0.2, 1.12], [0.1, 0.65, 0.75, 0.98],
+    [-0.15, 0.8, -0.75, 0.95]
+  ];
+  canopy.forEach(([ox, oy, oz, radius], index) => {
+    const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(radius * scale, 1), foliageMaterial);
+    crown.position.set(ox * scale, groundY + trunkHeight + (2.0 + oy) * scale, oz * scale);
+    crown.scale.set(1.08, 0.92 + (index % 2) * 0.12, 1);
+    crown.castShadow = true;
+    group.add(crown);
+  });
   group.position.set(x, 0, z);
-  group.userData.name = 'Pohon tepi jalan';
+  group.userData.name = 'Pohon tropis';
   scene.add(group);
   return group;
+}
+
+function addStreetLamp(x, z, groundY, rotation = 0) {
+  const group = new THREE.Group();
+  const poleMaterial = new THREE.MeshStandardMaterial({
+    color: 0x454b4d, metalness: 0.55, roughness: 0.42
+  });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.11, 5.8, 8), poleMaterial);
+  pole.position.y = groundY + 2.9;
+  pole.castShadow = true;
+  group.add(pole);
+
+  const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 1.25, 7), poleMaterial);
+  arm.rotation.z = Math.PI / 2;
+  arm.position.set(0.55, groundY + 5.65, 0);
+  group.add(arm);
+
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.65, 0.16, 0.28),
+    new THREE.MeshStandardMaterial({
+      color: 0xd8d4c4, emissive: 0xffe5a8, emissiveIntensity: 0.35, roughness: 0.45
+    })
+  );
+  head.position.set(1.12, groundY + 5.58, 0);
+  group.add(head);
+  group.position.set(x, 0, z);
+  group.rotation.y = rotation;
+  group.userData.name = 'Lampu jalan';
+  scene.add(group);
 }
 
 function addRoadsideTrees(points, roadWidth, highway) {
@@ -325,6 +453,7 @@ function addRoadsideTrees(points, roadWidth, highway) {
   let distanceToNext = spacing * 0.55;
   let travelled = 0;
   let treeIndex = 0;
+  let lampIndex = 0;
 
   for (let i = 0; i < points.length - 1; i++) {
     const a = points[i];
@@ -350,6 +479,17 @@ function addRoadsideTrees(points, roadWidth, highway) {
       const treeZ = z + nz * side * (offset + jitter);
 
       addRoadsideTree(treeX, treeZ, y, treeIndex + Math.round(travelled), 0.82 + (treeIndex % 3) * 0.12);
+
+      if (treeIndex % 2 === 0) {
+        const lampSide = lampIndex % 2 === 0 ? -1 : 1;
+        addStreetLamp(
+          x + nx * lampSide * (offset + 1.5),
+          z + nz * lampSide * (offset + 1.5),
+          y,
+          Math.atan2(dz, dx)
+        );
+        lampIndex++;
+      }
       treeIndex++;
       distanceToNext += spacing;
     }
@@ -661,7 +801,7 @@ async function loadMap() {
   scene.add(marker);
 
   document.querySelector('#stats').textContent =
-    `${counts.roads} segmen jalan • ${counts.buildings} bangunan • ${counts.water} area air • ${counts.green} area hijau • Terrain SRTM aktif`;
+    `${counts.roads} segmen jalan • ${counts.buildings} bangunan • ${counts.water} area air • ${counts.green} area hijau • Terrain SRTM • Detail kota 3D`;
   document.querySelector('#loading').classList.add('done');
 }
 
